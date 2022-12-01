@@ -1,0 +1,1 @@
+Inconsistent trace result with sphere trace front and then down. Changed to box trace down and then sphere trace front using Z value from box trace down hit
