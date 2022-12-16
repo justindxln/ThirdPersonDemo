@@ -72,3 +72,9 @@ Plugins/*/Intermediate/*
 
 # Cache files for the editor to use
 DerivedDataCache/*
+
+# Anim Starter Pack files
+Content/AnimStarterPack/
+
+# Mixamo files
+Content/Mannequin/Animations/Mixamo
