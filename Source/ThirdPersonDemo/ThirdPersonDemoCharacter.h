@@ -37,12 +37,6 @@ protected:
 	/** Resets HMD orientation in VR. */
 	void OnResetVR();
 
-	/** Called for forwards/backward input */
-	void MoveForward(float Value);
-
-	/** Called for side to side input */
-	void MoveRight(float Value);
-
 	/** 
 	 * Called via input to turn at a given rate. 
 	 * @param Rate	This is a normalized rate, i.e. 1.0 means 100% of desired turn rate
@@ -102,25 +96,26 @@ protected:
 	UPROPERTY(EditAnywhere, Category = "Traversal Properties")
 	float CoverSideDistance = 100;
 
-	UPROPERTY(EditAnywhere, Category = "Refinement tweaks")
+	UPROPERTY(EditAnywhere, Category = "Traversal tweaks")
 	float HangHorizontalOffset = 50.f;
-	UPROPERTY(EditAnywhere, Category = "Refinement tweaks")
+	UPROPERTY(EditAnywhere, Category = "Traversal tweaks")
 	float HangVerticalOffset = 50.f;
-	UPROPERTY(EditAnywhere, Category = "Refinement tweaks")
+	UPROPERTY(EditAnywhere, Category = "Traversal tweaks")
 	float CoverForwardOffset = 50.f;
-	UPROPERTY(EditAnywhere, Category = "Refinement tweaks")
+	UPROPERTY(EditAnywhere, Category = "Traversal tweaks")
 	float CoverSideOffset = 50.f;
-	UPROPERTY(EditAnywhere, Category = "Refinement tweaks")
+	UPROPERTY(EditAnywhere, Category = "Traversal tweaks")
 	float CoverAimYOffset = 50.f;
-	UPROPERTY(EditAnywhere, Category = "Refinement tweaks")
+
+	UPROPERTY(EditAnywhere, Category = "Camera Control tweaks")
 	float CameraCoverYOffset = 50.f;
-	UPROPERTY(EditAnywhere, Category = "Refinement tweaks")
+	UPROPERTY(EditAnywhere, Category = "Camera Control tweaks")
 	float CameraAimYOffset = 30.f;
-	UPROPERTY(EditAnywhere, Category = "Refinement tweaks")
+	UPROPERTY(EditAnywhere, Category = "Camera Control tweaks")
 	float CameraOffsetSpeed = 100.f;
-	UPROPERTY(EditAnywhere, Category = "Refinement tweaks")
+	UPROPERTY(EditAnywhere, Category = "Camera Control tweaks")
 	float CameraBoomAimLength = 150.f;
-	UPROPERTY(EditAnywhere, Category = "Refinement tweaks")
+	UPROPERTY(EditAnywhere, Category = "Camera Control tweaks")
 	float TraceOffset = 10.f;
 
 	float MaxJumpHeight;
@@ -131,6 +126,7 @@ protected:
 	FVector CameraOffset;
 	float CameraOffsetFOV;
 	float CameraBoomLength;
+
 	FHitResult TraceForwardClimbResult;
 	FHitResult TraceUpClimbResult;
 	FHitResult TraceForwardCoverResult;
@@ -209,5 +205,11 @@ protected:
 
 	/** Trace left to check geometry for entering cover **/
 	bool TraceSideCover();
+
+	/** Line Trace helper function **/
+	bool DoLineTraceCheck(const FVector TraceStart, const FVector TraceEnd, FHitResult& OutHit);
+
+	/** MoveComponentTo for Capsule Component helper function **/
+	void MoveCapsuleComponentTo(const FVector TargetLocation, const FRotator TargetRotation, const float OverTime = 0.2f);
 };
 

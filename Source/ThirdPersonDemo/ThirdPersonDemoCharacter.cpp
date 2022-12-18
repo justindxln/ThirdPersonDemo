@@ -56,8 +56,8 @@ void AThirdPersonDemoCharacter::SetupPlayerInputComponent(class UInputComponent*
 {
 	// Set up gameplay key bindings
 	check(PlayerInputComponent);
-	//PlayerInputComponent->BindAxis("MoveForward", this, &AThirdPersonDemoCharacter::MoveForward);
-	//PlayerInputComponent->BindAxis("MoveRight", this, &AThirdPersonDemoCharacter::MoveRight);
+	PlayerInputComponent->BindAxis("MoveForward");
+	PlayerInputComponent->BindAxis("MoveRight");
 
 	PlayerInputComponent->BindAction("Jump", IE_Pressed, this, &ACharacter::Jump);
 	PlayerInputComponent->BindAction("Jump", IE_Released, this, &ACharacter::StopJumping);
@@ -133,67 +133,6 @@ void AThirdPersonDemoCharacter::Tick(float DeltaSeconds)
 	TryUIHang();
 	TryHang();
 	AdjustCameraOffset(DeltaSeconds);
-
-	//GEngine->AddOnScreenDebugMessage(-1, 999.f, FColor::Red, FString::Printf(TEXT("POS: %f, %f, %f"), GetActorLocation().X, GetActorLocation().Y, GetActorLocation().Z));
-	//GEngine->AddOnScreenDebugMessage(-1, 2.f, FColor::Red, FString::Printf(TEXT("%s"), GetCharacterMovement()->IsFalling() ? TEXT("true") : TEXT("false")));
-	//GEngine->AddOnScreenDebugMessage(-1, 999.f, FColor::Red, FString::Printf(TEXT("Forward Vector: %f, %f, %f"), GetActorForwardVector().X, GetActorForwardVector().Y, GetActorForwardVector().Z));
-	//GEngine->AddOnScreenDebugMessage(-1, 999.f, FColor::Red, FString::Printf(TEXT("Location: %f, %f, %f"), GetActorLocation().X, GetActorLocation().Y, GetActorLocation().Z));
-}
-
-void AThirdPersonDemoCharacter::MoveForward(float Value)
-{
-	if (bIsHanging || (bIsInCover && !bIsAiming)) return;
-
-	if ((Controller == nullptr) || (Value == 0.0f)) return;
-
-	// find out which way is forward
-	const FRotator Rotation = Controller->GetControlRotation();
-	const FRotator YawRotation(0, Rotation.Yaw, 0);
-
-	// limit max walk speed if aiming
-	if (bIsAiming && !GetCharacterMovement()->IsFalling()) Value = FMath::Clamp(Value, -MaxAimMoveRate, MaxAimMoveRate);
-
-	// get forward vector
-	const FVector Direction = FRotationMatrix(YawRotation).GetUnitAxis(EAxis::X);
-	AddMovementInput(Direction, Value);
-
-	// If already popping out from cover, exit cover
-	if (bIsInCover && bIsAiming) ExitCover();
-
-	// Keep character facing front when walking while aiming
-	if (!bIsAiming) return;
-	FRotator ActorRotation = GetActorRotation();
-	ActorRotation.Yaw = GetControlRotation().Yaw;
-	SetActorRotation(ActorRotation.Quaternion());
-
-}
-
-void AThirdPersonDemoCharacter::MoveRight(float Value)
-{
-	if (bIsHanging || (bIsInCover && !bIsAiming)) return;
-
-	if ((Controller == nullptr) || (Value == 0.0f)) return;
-	
-	// find out which way is right
-	const FRotator Rotation = Controller->GetControlRotation();
-	const FRotator YawRotation(0, Rotation.Yaw, 0);
-
-	// limit max walk speed if aiming
-	if (bIsAiming && !GetCharacterMovement()->IsFalling()) Value = FMath::Clamp(Value, -MaxAimMoveRate, MaxAimMoveRate);
-
-	// get right vector 
-	const FVector Direction = FRotationMatrix(YawRotation).GetUnitAxis(EAxis::Y);
-	// add movement in that direction
-	AddMovementInput(Direction, Value);
-
-	// If already popping out from cover, exit cover
-	if (bIsInCover && bIsAiming) ExitCover();
-
-	// Keep character facing front when walking while aiming
-	if (!bIsAiming) return;
-	FRotator ActorRotation = GetActorRotation();
-	ActorRotation.Yaw = GetControlRotation().Yaw;
-	SetActorRotation(ActorRotation.Quaternion());
 }
 
 void AThirdPersonDemoCharacter::Movecharacter(const float DeltaSeconds)
@@ -201,18 +140,16 @@ void AThirdPersonDemoCharacter::Movecharacter(const float DeltaSeconds)
 	if (bIsHanging || (bIsInCover && !bIsAiming)) return;
 
 	// Get movement vector from inputs
-	const float ForwardValue = GetInputAxisValue("MoveForward");
-	const float RightValue = GetInputAxisValue("MoveRight");
-	FVector MoveDirection = FVector(ForwardValue, RightValue, 0.f);
+	const FVector MoveVector = FVector(GetInputAxisValue("MoveForward"), GetInputAxisValue("MoveRight"), 0.f);
+	float MoveMagnitude = FMath::Clamp(MoveVector.Size(), 0.0f, 1.0f);
 
-	GEngine->AddOnScreenDebugMessage(-1, 999.f, FColor::Red, FString::Printf(TEXT("%f, %f"), ForwardValue, RightValue));
+	if (Controller == nullptr || MoveMagnitude == 0.0f) return;
 
 	// Get movement speed, clamp it if player is aiming when walking
-	float MoveMagnitude = MoveDirection.Size();
-	if (bIsAiming && !GetCharacterMovement()->IsFalling()) FMath::Clamp(MoveMagnitude, 0.f, MaxAimMoveRate);
+	if (bIsAiming && !GetCharacterMovement()->IsFalling()) MoveMagnitude = FMath::Clamp(MoveMagnitude, 0.f, MaxAimMoveRate);
 	
 	// Rotate movement direction by controller yaw to get world direction, then normalise magnitude to 1
-	MoveDirection = UKismetMathLibrary::RotateAngleAxis(MoveDirection, GetControlRotation().Yaw, FVector::UpVector);
+	FVector MoveDirection = UKismetMathLibrary::RotateAngleAxis(MoveVector, GetControlRotation().Yaw, FVector::UpVector);
 	MoveDirection.Normalize();
 
 	AddMovementInput(MoveDirection, MoveMagnitude);
@@ -268,7 +205,7 @@ void AThirdPersonDemoCharacter::RecalculateTargetCameraOffset()
 
 void AThirdPersonDemoCharacter::TryUIHang()
 {
-	if (GetCharacterMovement()->IsFalling()) return;
+	if (bIsInCover || GetCharacterMovement()->IsFalling()) return;
 
 	bool bCanShowHangUI = !bIsHanging && TraceUpClimb() && TraceForwardClimb() && UKismetMathLibrary::InRange_FloatFloat(TraceUpClimbResult.Location.Z - GetActorLocation().Z, ClimbUpMinDistance, ClimbUpMaxDistance + MaxJumpHeight);
 
@@ -282,12 +219,12 @@ void AThirdPersonDemoCharacter::TryUIHang()
 
 		if (CurrentClimbUI == nullptr)
 		{
-		const FRotator UIRotation = TraceForwardClimbResult.Normal.Rotation();
-		CurrentClimbUI = GetWorld()->SpawnActor<AActor>(ClimbUIClass, UILocation, UIRotation);
+			const FRotator UIRotation = TraceForwardClimbResult.Normal.Rotation();
+			CurrentClimbUI = GetWorld()->SpawnActor<AActor>(ClimbUIClass, UILocation, UIRotation);
 		}
 		else
 		{
-		CurrentClimbUI->SetActorLocation(UILocation);
+			CurrentClimbUI->SetActorLocation(UILocation);
 		}
 	}
 	// If there is no climbable object, remove the current UI Actor if it exists
@@ -316,16 +253,8 @@ void AThirdPersonDemoCharacter::TryHang()
 	FVector HangLocation = TraceForwardClimbResult.Location + WallNormal * HangHorizontalOffset;
 	HangLocation.Z = TraceUpClimbResult.Location.Z - HangVerticalOffset;
 	const FRotator HangRotation = UKismetMathLibrary::MakeRotFromX(WallNormal * -1);
-	FLatentActionInfo LatentActionInfo;
-	LatentActionInfo.CallbackTarget = this;
 
-	UKismetSystemLibrary::MoveComponentTo(GetCapsuleComponent(), HangLocation, HangRotation, true, true, 0.2f, true, EMoveComponentAction::Move, LatentActionInfo);
-
-	//GEngine->AddOnScreenDebugMessage(-1, 999.f, FColor::Red, FString::Printf(TEXT("Forward hit: %f, %f, %f"), TraceClimbForwardResult.Location.X, TraceClimbForwardResult.Location.Y, TraceClimbForwardResult.Location.Z));
-	//GEngine->AddOnScreenDebugMessage(-1, 999.f, FColor::Red, FString::Printf(TEXT("Up hit: %f, %f, %f"), TraceClimbUpResult.Location.X, TraceClimbUpResult.Location.Y, TraceClimbUpResult.Location.Z));
-	//GEngine->AddOnScreenDebugMessage(-1, 999.f, FColor::Red, FString::Printf(TEXT("Hang Location: %f, %f, %f"), HangLocation.X, HangLocation.Y, HangLocation.Z));
-	//GEngine->AddOnScreenDebugMessage(-1, 999.f, FColor::Red, FString::Printf(TEXT("Hang Rotation: %f, %f, %f"), HangRotation.Pitch, HangRotation.Yaw, HangRotation.Roll));
-
+	MoveCapsuleComponentTo(HangLocation, HangRotation);
 }
 
 void AThirdPersonDemoCharacter::TryClimbUp()
@@ -341,10 +270,8 @@ void AThirdPersonDemoCharacter::TryClimbUp()
 
 void AThirdPersonDemoCharacter::OnClimbUpFinished()
 {
-	//GEngine->AddOnScreenDebugMessage(-1, 999.f, FColor::Red, FString::Printf(TEXT("Now")));
-	FLatentActionInfo LatentActionInfo;
-	LatentActionInfo.CallbackTarget = this;
-	UKismetSystemLibrary::MoveComponentTo(GetCapsuleComponent(), GetActorLocation() + GetActorForwardVector() * 30, GetActorRotation(), true, true, 0.25f, true, EMoveComponentAction::Move, LatentActionInfo);
+	const FVector EndLocation = GetActorLocation() + GetActorForwardVector() * 30.f;
+	MoveCapsuleComponentTo(EndLocation, GetActorRotation());
 
 	bIsHanging = false;
 	bIsClimbing = false;
@@ -364,22 +291,16 @@ bool AThirdPersonDemoCharacter::TraceUpClimb()
 {
 	const FVector TraceEnd = GetActorLocation() + GetActorForwardVector() * ClimbForwardDistance + FVector::UpVector * ClimbUpMinDistance;
 	const FVector TraceStart = TraceEnd + FVector::UpVector * (ClimbUpMaxDistance + MaxJumpHeight);
-	//const FRotator TraceRotation(0.f, 0.f, 0.f);
-	const EDrawDebugTrace::Type DrawMode = bDrawDebug ? EDrawDebugTrace::ForOneFrame : EDrawDebugTrace::None;
 
-	return UKismetSystemLibrary::LineTraceSingle(GetWorld(), TraceStart, TraceEnd, TraceTypeQuery_MAX, false, { this }, DrawMode, TraceUpClimbResult, true);
-	//return UKismetSystemLibrary::BoxTraceSingle(GetWorld(), TraceStart, TraceEnd, TraceHalfSize, TraceRotation, TraceTypeQuery_MAX, false, { this }, DrawMode, TraceUpClimbResult, true);
+	return DoLineTraceCheck(TraceStart, TraceEnd, TraceUpClimbResult);
 }
 
 bool AThirdPersonDemoCharacter::TraceForwardClimb()
 {
 	const FVector TraceStart = FVector(GetActorLocation().X, GetActorLocation().Y, TraceUpClimbResult.Location.Z - TraceOffset * 2);
 	const FVector TraceEnd = TraceStart + GetActorForwardVector() * ClimbForwardDistance;
-	//const FQuat TraceRotation = GetActorQuat();
-	const EDrawDebugTrace::Type DrawMode = bDrawDebug ? EDrawDebugTrace::ForOneFrame : EDrawDebugTrace::None;
 
-	return UKismetSystemLibrary::LineTraceSingle(GetWorld(), TraceStart, TraceEnd, TraceTypeQuery_MAX, false, { this }, DrawMode, TraceForwardClimbResult, true);
-	//return UKismetSystemLibrary::SphereTraceSingle(GetWorld(), TraceStart, TraceEnd, TraceShapeRadius, TraceTypeQuery_MAX, false, { this }, DrawMode, TraceForwardClimbResult, true);
+	return DoLineTraceCheck(TraceStart, TraceEnd, TraceForwardClimbResult);
 }
 
 void AThirdPersonDemoCharacter::StartAim()
@@ -389,10 +310,7 @@ void AThirdPersonDemoCharacter::StartAim()
 		FVector ActorLocation = GetActorLocation();
 		if (bIsTallCover) ActorLocation += UKismetMathLibrary::RotateAngleAxis(GetActorForwardVector(), bIsRightCover ? -90.f : 90.f, FVector::UpVector) * CoverAimYOffset;
 
-		FLatentActionInfo LatentActionInfo;
-		LatentActionInfo.CallbackTarget = this;
-
-		UKismetSystemLibrary::MoveComponentTo(GetCapsuleComponent(), ActorLocation, CoverRotator + FRotator(0.f, 180.f, 0.f), true, true, 0.2f, true, EMoveComponentAction::Move, LatentActionInfo);
+		MoveCapsuleComponentTo(ActorLocation, CoverRotator + FRotator(0.f, 180.f, 0.f));
 	}
 	
 	//bUseControllerRotationYaw = true;
@@ -404,10 +322,7 @@ void AThirdPersonDemoCharacter::EndAim()
 {
 	if (bIsInCover)
 	{
-		FLatentActionInfo LatentActionInfo;
-		LatentActionInfo.CallbackTarget = this;
-
-		UKismetSystemLibrary::MoveComponentTo(GetCapsuleComponent(), CoverLocation, CoverRotator, true, true, 0.2f, true, EMoveComponentAction::Move, LatentActionInfo);
+		MoveCapsuleComponentTo(CoverLocation, CoverRotator);
 	}
 
 	bUseControllerRotationYaw = false;
@@ -458,13 +373,12 @@ void AThirdPersonDemoCharacter::OnEnterCoverFinished()
 		TraceSideCoverResult.Location - TraceSideCoverResult.Normal * CoverSideOffset + TraceForwardCoverResult.Normal * (CoverForwardOffset + TraceOffset) + FVector::DownVector * GetCapsuleComponent()->GetScaledCapsuleHalfHeight_WithoutHemisphere():
 		TraceForwardCoverResult.Location + TraceForwardCoverResult.Normal * CoverForwardOffset;
 	CoverRotator = TraceForwardCoverResult.Normal.Rotation();
-	FLatentActionInfo LatentActionInfo;
-	LatentActionInfo.CallbackTarget = this;
+	
 
 	//GEngine->AddOnScreenDebugMessage(-1, 999.f, FColor::Red, bIsTallCover ? TEXT("TALL COVER") : TEXT("SHORT COVER"));
 	//GEngine->AddOnScreenDebugMessage(-1, 999.f, FColor::Red, bIsRightCover ? TEXT("RIGHT COVER") : TEXT("LEFT COVER"));
 
-	UKismetSystemLibrary::MoveComponentTo(GetCapsuleComponent(), CoverLocation, CoverRotator, true, true, 0.2f, true, EMoveComponentAction::Move, LatentActionInfo);
+	MoveCapsuleComponentTo(CoverLocation, CoverRotator);
 }
 
 void AThirdPersonDemoCharacter::ExitCover()
@@ -479,7 +393,7 @@ bool AThirdPersonDemoCharacter::TraceForwardCover()
 	FVector TraceEnd = TraceStart + GetActorForwardVector() * CoverForwardDistance;
 	const EDrawDebugTrace::Type DrawMode = bDrawDebug ? EDrawDebugTrace::ForDuration : EDrawDebugTrace::None;
 
-	if (UKismetSystemLibrary::LineTraceSingle(GetWorld(), TraceStart, TraceEnd, TraceTypeQuery_MAX, false, { this }, DrawMode, TraceForwardCoverResult, true))
+	if (DoLineTraceCheck(TraceStart, TraceEnd, TraceForwardCoverResult))
 	{
 		bIsTallCover = true;
 		return true;
@@ -488,14 +402,26 @@ bool AThirdPersonDemoCharacter::TraceForwardCover()
 	bIsTallCover = false;
 	TraceStart = GetActorLocation();
 	TraceEnd = TraceStart + GetActorForwardVector() * CoverForwardDistance;
-	return UKismetSystemLibrary::LineTraceSingle(GetWorld(), TraceStart, TraceEnd, TraceTypeQuery_MAX, false, { this }, DrawMode, TraceForwardCoverResult, true);
+	return DoLineTraceCheck(TraceStart, TraceEnd, TraceForwardCoverResult);
 }
 
 bool AThirdPersonDemoCharacter::TraceSideCover()
 {
 	const FVector TraceEnd = TraceForwardCoverResult.Location - TraceForwardCoverResult.Normal * TraceOffset;
 	const FVector TraceStart = TraceEnd + UKismetMathLibrary::RotateAngleAxis(TraceForwardCoverResult.Normal, bIsRightCover ? -90.f : 90.f, FVector::UpVector) * CoverSideDistance;
-	const EDrawDebugTrace::Type DrawMode = bDrawDebug ? EDrawDebugTrace::ForDuration : EDrawDebugTrace::None;
 
-	return UKismetSystemLibrary::LineTraceSingle(GetWorld(), TraceStart, TraceEnd, TraceTypeQuery_MAX, false, { this }, DrawMode, TraceSideCoverResult, true);
+	return DoLineTraceCheck(TraceStart, TraceEnd, TraceSideCoverResult);
+}
+
+bool AThirdPersonDemoCharacter::DoLineTraceCheck(const FVector TraceStart, const FVector TraceEnd, FHitResult& OutHit)
+{
+	const EDrawDebugTrace::Type DrawMode = bDrawDebug ? EDrawDebugTrace::ForDuration : EDrawDebugTrace::None;
+	return UKismetSystemLibrary::LineTraceSingle(GetWorld(), TraceStart, TraceEnd, TraceTypeQuery_MAX, false, { this }, DrawMode, OutHit, true);
+}
+
+void AThirdPersonDemoCharacter::MoveCapsuleComponentTo(const FVector TargetLocation, const FRotator TargetRotation, const float OverTime /*= 0.2f*/)
+{
+	FLatentActionInfo LatentActionInfo;
+	LatentActionInfo.CallbackTarget = this;
+	UKismetSystemLibrary::MoveComponentTo(GetCapsuleComponent(), TargetLocation, TargetRotation, true, true, 0.2f, true, EMoveComponentAction::Move, LatentActionInfo);
 }
