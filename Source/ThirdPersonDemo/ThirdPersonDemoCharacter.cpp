@@ -129,39 +129,79 @@ void AThirdPersonDemoCharacter::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
 
-	Movecharacter(DeltaSeconds);
+	Movecharacter();
 	TryUIHang();
 	TryHang();
+	TryEnterWallRun();
 	AdjustCameraOffset(DeltaSeconds);
 }
 
-void AThirdPersonDemoCharacter::Movecharacter(const float DeltaSeconds)
+void AThirdPersonDemoCharacter::Movecharacter()
 {
-	if (bIsHanging || (bIsInCover && !bIsAiming)) return;
+	if (Controller == nullptr) return;
 
 	// Get movement vector from inputs
 	const FVector MoveVector = FVector(GetInputAxisValue("MoveForward"), GetInputAxisValue("MoveRight"), 0.f);
-	float MoveMagnitude = FMath::Clamp(MoveVector.Size(), 0.0f, 1.0f);
+	const float MoveMagnitude = FMath::Clamp(MoveVector.Size(), 0.0f, 1.0f);
 
-	if (Controller == nullptr || MoveMagnitude == 0.0f) return;
-
-	// Get movement speed, clamp it if player is aiming when walking
-	if (bIsAiming && !GetCharacterMovement()->IsFalling()) MoveMagnitude = FMath::Clamp(MoveMagnitude, 0.f, MaxAimMoveRate);
-	
 	// Rotate movement direction by controller yaw to get world direction, then normalise magnitude to 1
 	FVector MoveDirection = UKismetMathLibrary::RotateAngleAxis(MoveVector, GetControlRotation().Yaw, FVector::UpVector);
 	MoveDirection.Normalize();
 
+	if (bIsWallRunning)
+	{
+		MoveCharacterWallRun(MoveDirection, MoveMagnitude);
+	}
+	else
+	{
+		MoveCharacterDefault(MoveDirection, MoveMagnitude);
+	}
+}
+
+void AThirdPersonDemoCharacter::MoveCharacterDefault(const FVector MoveDirection, float MoveMagnitude)
+{
+	if (bIsHanging || (bIsInCover && !bIsAiming)) return;
+	if (MoveMagnitude == 0.0f) return;
+
+	// Clamp movement speed it if player is aiming when walking
+	if (bIsAiming && !GetCharacterMovement()->IsFalling()) 
+	{
+		MoveMagnitude = FMath::Clamp(MoveMagnitude, 0.f, MaxAimMoveRate);
+	}
 	AddMovementInput(MoveDirection, MoveMagnitude);
 		
-	// If already popping out from cover, exit cover
-	if (bIsInCover && bIsAiming) ExitCover();
+	if (!bIsAiming) return;
 
 	// Keep character facing front when walking while aiming
-	if (!bIsAiming) return;
 	FRotator ActorRotation = GetActorRotation();
 	ActorRotation.Yaw = GetControlRotation().Yaw;
 	SetActorRotation(ActorRotation.Quaternion());
+
+	// If already popping out from cover, exit cover
+	if (bIsInCover) ExitCover();
+}
+
+void AThirdPersonDemoCharacter::MoveCharacterWallRun(const FVector MoveDirection, float MoveMagnitude)
+{
+	// If there is no more wall, exit wall run
+	if (!TraceSideWallRun()) 
+	{
+		ExitWallRun();
+		return;
+	}
+
+	FVector WallRunDirection = RotateAngleZAxis(TraceSideWallRunResult.Normal, bIsRightWallRunning);
+	if (MoveMagnitude == 0.0f || FVector::DotProduct(MoveDirection, WallRunDirection) <= 0.0f)
+	{
+		ExitWallRun();
+		return;
+	}
+
+	float CorrectionAngle = FVector::PointPlaneDist(GetActorLocation(), TraceSideWallRunResult.Location, TraceSideWallRunResult.Normal) - WallRunOffset;
+	WallRunDirection = RotateAngleZAxis(WallRunDirection, bIsRightWallRunning, CorrectionAngle / 2);
+
+	GEngine->AddOnScreenDebugMessage(-1, 999.f, FColor::Red, FString::Printf(TEXT("Offset Difference %f"), CorrectionAngle));
+	AddMovementInput(WallRunDirection, MoveMagnitude);
 }
 
 void AThirdPersonDemoCharacter::Turn(float Rate)
@@ -170,7 +210,7 @@ void AThirdPersonDemoCharacter::Turn(float Rate)
 	AddControllerYawInput(Rate);
 
 	if (!bIsAiming) return;
-
+		
 	const float DeltaYaw = UKismetMathLibrary::NormalizedDeltaRotator(GetControlRotation(), GetActorRotation()).Yaw;
 	if (UKismetMathLibrary::InRange_FloatFloat(DeltaYaw, -90.f, 90.f)) return;
 
@@ -201,6 +241,33 @@ void AThirdPersonDemoCharacter::RecalculateTargetCameraOffset()
 		CameraOffset = FVector::ZeroVector;
 		CameraBoomLength = CameraBoomOriginalLength;
 	}
+}
+
+void AThirdPersonDemoCharacter::StartAim()
+{
+	if (bIsInCover)
+	{
+		FVector ActorLocation = GetActorLocation();
+		if (bIsTallCover) ActorLocation += RotateAngleZAxis(GetActorForwardVector(), !bIsRightCover) * CoverAimYOffset;
+
+		MoveCapsuleComponentTo(ActorLocation, GetCoverRotation() + FRotator(0.f, 180.f, 0.f));
+	}
+	
+	//bUseControllerRotationYaw = true;
+	bIsAiming = true;
+	RecalculateTargetCameraOffset();
+}
+
+void AThirdPersonDemoCharacter::EndAim()
+{
+	if (bIsInCover)
+	{
+		MoveCapsuleComponentTo(GetCoverLocation(), GetCoverRotation());
+	}
+
+	bUseControllerRotationYaw = false;
+	bIsAiming = false;
+	RecalculateTargetCameraOffset();
 }
 
 void AThirdPersonDemoCharacter::TryUIHang()
@@ -287,47 +354,27 @@ void AThirdPersonDemoCharacter::TryDropDown()
 	bIsHanging = false;
 }
 
-bool AThirdPersonDemoCharacter::TraceUpClimb()
+void AThirdPersonDemoCharacter::TryEnterWallRun()
 {
-	const FVector TraceEnd = GetActorLocation() + GetActorForwardVector() * ClimbForwardDistance + FVector::UpVector * ClimbUpMinDistance;
-	const FVector TraceStart = TraceEnd + FVector::UpVector * (ClimbUpMaxDistance + MaxJumpHeight);
+	// return if character is not in the air
+	if (!GetCharacterMovement()->IsFalling()) return;
 
-	return DoLineTraceCheck(TraceStart, TraceEnd, TraceUpClimbResult);
+	FVector HorizontalVector = GetCharacterMovement()->Velocity;
+	const float VerticalVelocity = HorizontalVector.Z;
+	HorizontalVector.Z = 0;
+
+	if (HorizontalVector.Size() < 550.f || FMath::Abs(VerticalVelocity) > 100.f) return;
+
+	if (!TraceSideWallRun()) return;
+
+	GetCharacterMovement()->SetMovementMode(MOVE_Flying);
+	bIsWallRunning = true;
 }
 
-bool AThirdPersonDemoCharacter::TraceForwardClimb()
+void AThirdPersonDemoCharacter::ExitWallRun()
 {
-	const FVector TraceStart = FVector(GetActorLocation().X, GetActorLocation().Y, TraceUpClimbResult.Location.Z - TraceOffset * 2);
-	const FVector TraceEnd = TraceStart + GetActorForwardVector() * ClimbForwardDistance;
-
-	return DoLineTraceCheck(TraceStart, TraceEnd, TraceForwardClimbResult);
-}
-
-void AThirdPersonDemoCharacter::StartAim()
-{
-	if (bIsInCover)
-	{
-		FVector ActorLocation = GetActorLocation();
-		if (bIsTallCover) ActorLocation += UKismetMathLibrary::RotateAngleAxis(GetActorForwardVector(), bIsRightCover ? -90.f : 90.f, FVector::UpVector) * CoverAimYOffset;
-
-		MoveCapsuleComponentTo(ActorLocation, CoverRotator + FRotator(0.f, 180.f, 0.f));
-	}
-	
-	//bUseControllerRotationYaw = true;
-	bIsAiming = true;
-	RecalculateTargetCameraOffset();
-}
-
-void AThirdPersonDemoCharacter::EndAim()
-{
-	if (bIsInCover)
-	{
-		MoveCapsuleComponentTo(CoverLocation, CoverRotator);
-	}
-
-	bUseControllerRotationYaw = false;
-	bIsAiming = false;
-	RecalculateTargetCameraOffset();
+	GetCharacterMovement()->SetMovementMode(MOVE_Falling);
+	bIsWallRunning = false;
 }
 
 void AThirdPersonDemoCharacter::ToggleCover()
@@ -340,21 +387,24 @@ void AThirdPersonDemoCharacter::ToggleCover()
 
 void AThirdPersonDemoCharacter::TryEnterCover()
 {
-	if (bIsInCover || !TraceForwardCover()) return;
+	// Check if there is a valid wall in front of the player to take cover against
+	if (!TraceForwardCover()) return;
 
 	// Get the angle of the line trace against the wall to determine if peeking out of the left or right cover
 	const FVector2D CharacterForwardVector = FVector2D(GetActorForwardVector().X, GetActorForwardVector().Y);
 	const FVector2D WallNormal = FVector2D(TraceForwardCoverResult.Normal.X, TraceForwardCoverResult.Normal.Y);
 	const float DotProduct = FVector2D::DotProduct(CharacterForwardVector, WallNormal);
 	const float Determinant = CharacterForwardVector.X * WallNormal.Y - CharacterForwardVector.Y * WallNormal.X;
-
 	bIsRightCover = atan2(Determinant, DotProduct) > 0;
+
+	// If it's a tall cover, check where it ends on the left/right side to take cover there
 	if (bIsTallCover && !TraceSideCover())
 	{
 		bIsRightCover = !bIsRightCover;
 		if (!TraceSideCover()) return;
 	}
 
+	// Ideally play an animation of getting into cover but it's a little janky right now
 	/*
 	const float AnimDuration = PlayAnimMontage(EnterCoverRightMontage);
 	FTimerHandle CoverTimerHandle;
@@ -363,22 +413,8 @@ void AThirdPersonDemoCharacter::TryEnterCover()
 
 	bIsInCover = true;
 	bIsAiming = false;
+	MoveCapsuleComponentTo(GetCoverLocation(), GetCoverRotation());
 	RecalculateTargetCameraOffset();
-	OnEnterCoverFinished();
-}
- 
-void AThirdPersonDemoCharacter::OnEnterCoverFinished()
-{
-	CoverLocation = bIsTallCover ? 
-		TraceSideCoverResult.Location - TraceSideCoverResult.Normal * CoverSideOffset + TraceForwardCoverResult.Normal * (CoverForwardOffset + TraceOffset) + FVector::DownVector * GetCapsuleComponent()->GetScaledCapsuleHalfHeight_WithoutHemisphere():
-		TraceForwardCoverResult.Location + TraceForwardCoverResult.Normal * CoverForwardOffset;
-	CoverRotator = TraceForwardCoverResult.Normal.Rotation();
-	
-
-	//GEngine->AddOnScreenDebugMessage(-1, 999.f, FColor::Red, bIsTallCover ? TEXT("TALL COVER") : TEXT("SHORT COVER"));
-	//GEngine->AddOnScreenDebugMessage(-1, 999.f, FColor::Red, bIsRightCover ? TEXT("RIGHT COVER") : TEXT("LEFT COVER"));
-
-	MoveCapsuleComponentTo(CoverLocation, CoverRotator);
 }
 
 void AThirdPersonDemoCharacter::ExitCover()
@@ -387,18 +423,63 @@ void AThirdPersonDemoCharacter::ExitCover()
 	RecalculateTargetCameraOffset();
 }
 
+bool AThirdPersonDemoCharacter::TraceUpClimb()
+{
+	// Check if there is a platform of the right height in front of the player to hang on
+	const FVector TraceEnd = GetActorLocation() + GetActorForwardVector() * ClimbForwardDistance + FVector::UpVector * ClimbUpMinDistance;
+	const FVector TraceStart = TraceEnd + FVector::UpVector * (ClimbUpMaxDistance + MaxJumpHeight);
+
+	return DoLineTraceCheck(TraceStart, TraceEnd, TraceUpClimbResult);
+}
+
+bool AThirdPersonDemoCharacter::TraceForwardClimb()
+{
+	// Check if there is a platform of the right distance in front of the player to hang on
+	const FVector TraceStart = FVector(GetActorLocation().X, GetActorLocation().Y, TraceUpClimbResult.Location.Z - TraceOffset * 2);
+	const FVector TraceEnd = TraceStart + GetActorForwardVector() * ClimbForwardDistance;
+
+	return DoLineTraceCheck(TraceStart, TraceEnd, TraceForwardClimbResult);
+}
+
+bool AThirdPersonDemoCharacter::TraceSideWallRun()
+{
+	const FVector TraceStart = GetActorLocation();
+	FVector TraceEnd;
+
+	// If already wall running, keep checking if a wall is available on the current side
+	if (bIsWallRunning)
+	{
+		TraceEnd = TraceStart + RotateAngleZAxis(GetActorForwardVector(), bIsRightWallRunning) * WallRunSideDistance;
+		return DoLineTraceCheck(TraceStart, TraceEnd, TraceSideWallRunResult);
+	}
+
+	// If not already wall running, first check for a wall on the right side
+	TraceEnd = TraceStart + RotateAngleZAxis(GetActorForwardVector(), true) * WallRunSideDistance;
+	if (DoLineTraceCheck(TraceStart, TraceEnd, TraceSideWallRunResult))
+	{
+		bIsRightWallRunning = true;
+		return true;
+	}
+
+	// If no wall on the right side is available, check the left side
+	TraceEnd = TraceStart + RotateAngleZAxis(GetActorForwardVector(), false) * WallRunSideDistance;
+	bIsRightWallRunning = false;
+	return DoLineTraceCheck(TraceStart, TraceEnd, TraceSideWallRunResult);
+
+}
+
 bool AThirdPersonDemoCharacter::TraceForwardCover()
 {
+	// First check for tall wall cover
 	FVector TraceStart = GetActorLocation() + FVector::UpVector * GetCapsuleComponent()->GetScaledCapsuleHalfHeight_WithoutHemisphere();
 	FVector TraceEnd = TraceStart + GetActorForwardVector() * CoverForwardDistance;
-	const EDrawDebugTrace::Type DrawMode = bDrawDebug ? EDrawDebugTrace::ForDuration : EDrawDebugTrace::None;
-
 	if (DoLineTraceCheck(TraceStart, TraceEnd, TraceForwardCoverResult))
 	{
 		bIsTallCover = true;
 		return true;
 	}
 
+	// If no tall cover is available, check for a short wall cover
 	bIsTallCover = false;
 	TraceStart = GetActorLocation();
 	TraceEnd = TraceStart + GetActorForwardVector() * CoverForwardDistance;
@@ -407,8 +488,9 @@ bool AThirdPersonDemoCharacter::TraceForwardCover()
 
 bool AThirdPersonDemoCharacter::TraceSideCover()
 {
+	// Check where the wall cover ends
 	const FVector TraceEnd = TraceForwardCoverResult.Location - TraceForwardCoverResult.Normal * TraceOffset;
-	const FVector TraceStart = TraceEnd + UKismetMathLibrary::RotateAngleAxis(TraceForwardCoverResult.Normal, bIsRightCover ? -90.f : 90.f, FVector::UpVector) * CoverSideDistance;
+	const FVector TraceStart = TraceEnd + RotateAngleZAxis(TraceForwardCoverResult.Normal, !bIsRightCover) * CoverSideDistance;
 
 	return DoLineTraceCheck(TraceStart, TraceEnd, TraceSideCoverResult);
 }
@@ -424,4 +506,28 @@ void AThirdPersonDemoCharacter::MoveCapsuleComponentTo(const FVector TargetLocat
 	FLatentActionInfo LatentActionInfo;
 	LatentActionInfo.CallbackTarget = this;
 	UKismetSystemLibrary::MoveComponentTo(GetCapsuleComponent(), TargetLocation, TargetRotation, true, true, 0.2f, true, EMoveComponentAction::Move, LatentActionInfo);
+}
+
+FVector AThirdPersonDemoCharacter::GetCoverLocation()
+{
+	if (bIsTallCover)
+	{
+		return TraceSideCoverResult.Location - TraceSideCoverResult.Normal * CoverSideOffset 
+			+ TraceForwardCoverResult.Normal * (CoverForwardOffset + TraceOffset) 
+			+ FVector::DownVector * GetCapsuleComponent()->GetScaledCapsuleHalfHeight_WithoutHemisphere();
+	}
+	else
+	{
+		return TraceForwardCoverResult.Location + TraceForwardCoverResult.Normal * CoverForwardOffset;
+	}
+}
+
+FRotator AThirdPersonDemoCharacter::GetCoverRotation()
+{
+	return TraceForwardCoverResult.Normal.Rotation();
+}
+
+FVector AThirdPersonDemoCharacter::RotateAngleZAxis(const FVector InVector, bool bClockWise, float Degree /*= 90.f*/)
+{
+	return UKismetMathLibrary::RotateAngleAxis(InVector, bClockWise ? Degree : -Degree, FVector::UpVector);
 }

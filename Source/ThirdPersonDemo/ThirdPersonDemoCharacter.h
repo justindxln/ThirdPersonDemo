@@ -74,8 +74,6 @@ protected:
 
 	UPROPERTY(EditAnywhere, Category = "Anim Montages")
 	UAnimMontage* ClimbMontage;
-	UPROPERTY(EditAnywhere, Category = "Anim Montages")
-	UAnimMontage* EnterCoverRightMontage;
 
 	UPROPERTY(EditAnywhere, Category = "Debug Toggle")
 	bool bDrawDebug = true;
@@ -92,6 +90,8 @@ protected:
 	UPROPERTY(EditAnywhere, Category = "Traversal Properties")
 	float ClimbUpMinDistance = 30;
 	UPROPERTY(EditAnywhere, Category = "Traversal Properties")
+	float WallRunSideDistance = 30;
+	UPROPERTY(EditAnywhere, Category = "Traversal Properties")
 	float CoverForwardDistance = 100;
 	UPROPERTY(EditAnywhere, Category = "Traversal Properties")
 	float CoverSideDistance = 100;
@@ -100,6 +100,8 @@ protected:
 	float HangHorizontalOffset = 50.f;
 	UPROPERTY(EditAnywhere, Category = "Traversal tweaks")
 	float HangVerticalOffset = 50.f;
+	UPROPERTY(EditAnywhere, Category = "Traversal tweaks")
+	float WallRunOffset = 45.f;
 	UPROPERTY(EditAnywhere, Category = "Traversal tweaks")
 	float CoverForwardOffset = 50.f;
 	UPROPERTY(EditAnywhere, Category = "Traversal tweaks")
@@ -129,10 +131,9 @@ protected:
 
 	FHitResult TraceForwardClimbResult;
 	FHitResult TraceUpClimbResult;
+	FHitResult TraceSideWallRunResult;
 	FHitResult TraceForwardCoverResult;
 	FHitResult TraceSideCoverResult;
-	FVector CoverLocation;
-	FRotator CoverRotator;
 
 	UPROPERTY(BlueprintReadOnly, Category = "Movement State")
 	bool bIsAiming;
@@ -146,11 +147,19 @@ protected:
 	bool bIsRightCover;
 	UPROPERTY(BlueprintReadOnly, Category = "Movement State")
 	bool bIsTallCover;
+	UPROPERTY(BlueprintReadOnly, Category = "Movement State")
+	bool bIsWallRunning;
+	UPROPERTY(BlueprintReadOnly, Category = "Movement State")
+	bool bIsRightWallRunning;
 
 	virtual void Tick(float DeltaSeconds) override;
 
 	/** Called every tick to move the character **/
-	void Movecharacter(const float DeltaSeconds);
+	void Movecharacter();
+
+	void MoveCharacterDefault(const FVector MoveDirection, float MoveMagnitude);
+
+	void MoveCharacterWallRun(const FVector MoveDirection, float MoveMagnitude);
 
 	/** Called via input to turn the camera. Also turn the actor if needed when aiming **/
 	void Turn(float Rate);
@@ -182,11 +191,11 @@ protected:
 	/** Drop down from hanging state **/
 	void TryDropDown();
 
-	/** Trace forward to check geometry for climbing **/
-	bool TraceForwardClimb();
+	/** Check if wall is available in range and enter wall run state if possible **/
+	void TryEnterWallRun();
 
-	/** Trace downward to check geometry for climbing **/
-	bool TraceUpClimb();
+	/** Exit wall run state **/
+	void ExitWallRun();
 
 	/** Toggle in/out of cover state **/
 	void ToggleCover();
@@ -194,11 +203,17 @@ protected:
 	/** Check if cover is available in range and enter cover state if possible **/
 	void TryEnterCover();
 
-	/** Call when entering cover animation has finished **/
-	void OnEnterCoverFinished();
-
-	/** Exit cover state if possible **/
+	/** Exit cover state **/
 	void ExitCover();
+
+	/** Trace forward to check geometry for climbing **/
+	bool TraceForwardClimb();
+
+	/** Trace downward to check geometry for climbing **/
+	bool TraceUpClimb();
+
+	/** Trace to the side to check geometry for wall running **/
+	bool TraceSideWallRun();
 
 	/** Trace forward to check geometry for entering cover **/
 	bool TraceForwardCover();
@@ -206,10 +221,19 @@ protected:
 	/** Trace left to check geometry for entering cover **/
 	bool TraceSideCover();
 
-	/** Line Trace helper function **/
+	/** Helper function for Line Traces **/
 	bool DoLineTraceCheck(const FVector TraceStart, const FVector TraceEnd, FHitResult& OutHit);
 
-	/** MoveComponentTo for Capsule Component helper function **/
+	/** Helper function for MoveComponentTo for Capsule Component **/
 	void MoveCapsuleComponentTo(const FVector TargetLocation, const FRotator TargetRotation, const float OverTime = 0.2f);
+
+	/** Helper function to get cover location **/
+	FVector GetCoverLocation();
+
+	/** Helper function to get cover rotation **/
+	FRotator GetCoverRotation();
+
+	/** Helper function to rotate Vector 90 degress around Z axis **/
+	FVector RotateAngleZAxis(const FVector InVector, bool bClockWise, float Degree = 90.f);
 };
 
