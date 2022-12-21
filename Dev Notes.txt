@@ -1,2 +1,4 @@
 - Inconsistent trace result with sphere trace front and then down. Changed to box trace down and then sphere trace front using Z value from box trace down hit
 - Difficulty maintaining distance to wall during wall running. MoveComponentTo solution was janky and stuttery. Used angle correction on movement direction instead
+- Z velocity issues on wall run start. Realism vs consistency. Solved with setting Z velocity to *= 0.3. Gravity Scale is modified during wallrun
+- Z Velocity on jumping off wall run is unnatural. Need to find way to adjust initial Z velocity for wall run jump that's not clunky

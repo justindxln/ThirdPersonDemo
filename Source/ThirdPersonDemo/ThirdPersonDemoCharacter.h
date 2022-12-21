@@ -64,6 +64,8 @@ protected:
 
 	virtual bool CanJumpInternal_Implementation() const override;
 
+	virtual void Jump() override;
+
 public:
 	/** Returns CameraBoom subobject **/
 	FORCEINLINE class USpringArmComponent* GetCameraBoom() const { return CameraBoom; }
@@ -91,6 +93,16 @@ protected:
 	float ClimbUpMinDistance = 30;
 	UPROPERTY(EditAnywhere, Category = "Traversal Properties")
 	float WallRunSideDistance = 30;
+	UPROPERTY(EditAnywhere, Category = "Traversal Properties")
+	float WallRunMinHorizontalSpeed = 500;
+	UPROPERTY(EditAnywhere, Category = "Traversal Properties")
+	float WallRunMinVerticalVelocity = -100;
+	UPROPERTY(EditAnywhere, Category = "Traversal Properties")
+	float WallRunMinJumpOffSpeed = 800.f;
+	UPROPERTY(EditAnywhere, Category = "Traversal Properties")
+	float WallRunMinGravityScale = 0.15f;
+	UPROPERTY(EditAnywhere, Category = "Traversal Properties")
+	float WallRunVerticalSpeedMultiplier = 0.5f;
 	UPROPERTY(EditAnywhere, Category = "Traversal Properties")
 	float CoverForwardDistance = 100;
 	UPROPERTY(EditAnywhere, Category = "Traversal Properties")
@@ -129,6 +141,9 @@ protected:
 	float CameraOffsetFOV;
 	float CameraBoomLength;
 
+	FVector ControlMoveVector;
+	float ControlMoveMagnitude;
+
 	FHitResult TraceForwardClimbResult;
 	FHitResult TraceUpClimbResult;
 	FHitResult TraceSideWallRunResult;
@@ -157,9 +172,11 @@ protected:
 	/** Called every tick to move the character **/
 	void Movecharacter();
 
-	void MoveCharacterDefault(const FVector MoveDirection, float MoveMagnitude);
+	/** Default movement control when not in any special state **/
+	void MoveCharacterDefault();
 
-	void MoveCharacterWallRun(const FVector MoveDirection, float MoveMagnitude);
+	/** Control movement during wallrunning **/
+	void MoveCharacterWallRun();
 
 	/** Called via input to turn the camera. Also turn the actor if needed when aiming **/
 	void Turn(float Rate);
@@ -207,13 +224,16 @@ protected:
 	void ExitCover();
 
 	/** Trace forward to check geometry for climbing **/
-	bool TraceForwardClimb();
+	bool TraceForwardClimb(const bool bDisableDraw = false);
 
 	/** Trace downward to check geometry for climbing **/
-	bool TraceUpClimb();
+	bool TraceUpClimb(const bool bDisableDraw = false);
 
 	/** Trace to the side to check geometry for wall running **/
 	bool TraceSideWallRun();
+
+	/** Trace downward to check for ground to exit wall running **/
+	bool TraceDownWallRun();
 
 	/** Trace forward to check geometry for entering cover **/
 	bool TraceForwardCover();
@@ -221,19 +241,25 @@ protected:
 	/** Trace left to check geometry for entering cover **/
 	bool TraceSideCover();
 
+	//////////////////////////////////////////////////////////////////////////
+	// Helper Functions
+
 	/** Helper function for Line Traces **/
-	bool DoLineTraceCheck(const FVector TraceStart, const FVector TraceEnd, FHitResult& OutHit);
+	bool DoLineTraceCheck(const FVector TraceStart, const FVector TraceEnd, FHitResult& OutHit, const bool bDisableDraw = false);
 
 	/** Helper function for MoveComponentTo for Capsule Component **/
 	void MoveCapsuleComponentTo(const FVector TargetLocation, const FRotator TargetRotation, const float OverTime = 0.2f);
 
 	/** Helper function to get cover location **/
-	FVector GetCoverLocation();
+	FVector GetCoverLocation() const;
 
 	/** Helper function to get cover rotation **/
-	FRotator GetCoverRotation();
+	FRotator GetCoverRotation() const;
 
 	/** Helper function to rotate Vector 90 degress around Z axis **/
-	FVector RotateAngleZAxis(const FVector InVector, bool bClockWise, float Degree = 90.f);
+	FVector RotateAngleZAxis(const FVector InVector, bool bClockWise, float Degree = 90.f) const;
+
+	/** Helper function to get vector with zero vertical component **/
+	FVector GetHorizontalVector(const FVector InVector) const;
 };
 

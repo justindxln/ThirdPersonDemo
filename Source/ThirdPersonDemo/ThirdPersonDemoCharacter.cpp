@@ -49,6 +49,26 @@ AThirdPersonDemoCharacter::AThirdPersonDemoCharacter()
 	// are set in the derived blueprint asset named MyCharacter (to avoid direct content references in C++)
 }
 
+void AThirdPersonDemoCharacter::BeginPlay()
+{
+	Super::BeginPlay();
+
+	MaxJumpHeight = GetCharacterMovement()->GetMaxJumpHeight();
+	CameraBoomOriginalLength = CameraBoom->TargetArmLength;
+	RecalculateTargetCameraOffset();
+}
+
+void AThirdPersonDemoCharacter::Tick(float DeltaSeconds)
+{
+	Super::Tick(DeltaSeconds);
+
+	Movecharacter();
+	TryUIHang();
+	TryHang();
+	TryEnterWallRun();
+	AdjustCameraOffset(DeltaSeconds);
+}
+
 //////////////////////////////////////////////////////////////////////////
 // Input
 
@@ -59,7 +79,7 @@ void AThirdPersonDemoCharacter::SetupPlayerInputComponent(class UInputComponent*
 	PlayerInputComponent->BindAxis("MoveForward");
 	PlayerInputComponent->BindAxis("MoveRight");
 
-	PlayerInputComponent->BindAction("Jump", IE_Pressed, this, &ACharacter::Jump);
+	PlayerInputComponent->BindAction("Jump", IE_Pressed, this, &AThirdPersonDemoCharacter::Jump);
 	PlayerInputComponent->BindAction("Jump", IE_Released, this, &ACharacter::StopJumping);
 	PlayerInputComponent->BindAction("ClimbUp", IE_Pressed, this, &AThirdPersonDemoCharacter::TryClimbUp);
 	PlayerInputComponent->BindAction("DropDown", IE_Pressed, this, &AThirdPersonDemoCharacter::TryDropDown);
@@ -76,18 +96,20 @@ void AThirdPersonDemoCharacter::SetupPlayerInputComponent(class UInputComponent*
 	PlayerInputComponent->BindAxis("LookUpRate", this, &AThirdPersonDemoCharacter::LookUpAtRate);
 }
 
-void AThirdPersonDemoCharacter::BeginPlay()
+void AThirdPersonDemoCharacter::Jump()
 {
-	Super::BeginPlay();
+	// If wallrunning, jump off wall at an angle
+	if (bIsWallRunning)
+	{
+		GetCharacterMovement()->Velocity = RotateAngleZAxis(GetActorForwardVector(), !bIsRightWallRunning, 45.f) * WallRunMinJumpOffSpeed;
+	}
 
-	MaxJumpHeight = GetCharacterMovement()->GetMaxJumpHeight();
-	CameraBoomOriginalLength = CameraBoom->TargetArmLength;
-	RecalculateTargetCameraOffset();
+	Super::Jump();
 }
 
 bool AThirdPersonDemoCharacter::CanJumpInternal_Implementation() const
 {
-	const bool bCanJump = !bIsHanging && !bIsClimbing && !bIsInCover;
+	const bool bCanJump = bIsWallRunning || (!bIsHanging && !bIsClimbing && !bIsInCover && Super::CanJumpInternal_Implementation());
 
 	return bCanJump;
 }
@@ -125,50 +147,39 @@ void AThirdPersonDemoCharacter::LookUpAtRate(float Rate)
 	AddControllerPitchInput(Rate * BaseLookUpRate * GetWorld()->GetDeltaSeconds());
 }
 
-void AThirdPersonDemoCharacter::Tick(float DeltaSeconds)
-{
-	Super::Tick(DeltaSeconds);
-
-	Movecharacter();
-	TryUIHang();
-	TryHang();
-	TryEnterWallRun();
-	AdjustCameraOffset(DeltaSeconds);
-}
-
 void AThirdPersonDemoCharacter::Movecharacter()
 {
 	if (Controller == nullptr) return;
 
-	// Get movement vector from inputs
-	const FVector MoveVector = FVector(GetInputAxisValue("MoveForward"), GetInputAxisValue("MoveRight"), 0.f);
-	const float MoveMagnitude = FMath::Clamp(MoveVector.Size(), 0.0f, 1.0f);
+	// Get movement vector from inputs, rotate by controller yaw to get world direction, then normalise magnitude to 1
+	ControlMoveVector = FVector(GetInputAxisValue("MoveForward"), GetInputAxisValue("MoveRight"), 0.f);
+	ControlMoveVector = RotateAngleZAxis(ControlMoveVector, true, GetControlRotation().Yaw);
+	ControlMoveVector.Normalize();
 
-	// Rotate movement direction by controller yaw to get world direction, then normalise magnitude to 1
-	FVector MoveDirection = UKismetMathLibrary::RotateAngleAxis(MoveVector, GetControlRotation().Yaw, FVector::UpVector);
-	MoveDirection.Normalize();
+	// Get movement magnitude from vector
+	ControlMoveMagnitude = ControlMoveVector.Size();
 
 	if (bIsWallRunning)
 	{
-		MoveCharacterWallRun(MoveDirection, MoveMagnitude);
+		MoveCharacterWallRun();
 	}
 	else
 	{
-		MoveCharacterDefault(MoveDirection, MoveMagnitude);
+		MoveCharacterDefault();
 	}
 }
 
-void AThirdPersonDemoCharacter::MoveCharacterDefault(const FVector MoveDirection, float MoveMagnitude)
+void AThirdPersonDemoCharacter::MoveCharacterDefault()
 {
 	if (bIsHanging || (bIsInCover && !bIsAiming)) return;
-	if (MoveMagnitude == 0.0f) return;
+	if (ControlMoveMagnitude == 0.0f) return;
 
 	// Clamp movement speed it if player is aiming when walking
 	if (bIsAiming && !GetCharacterMovement()->IsFalling()) 
 	{
-		MoveMagnitude = FMath::Clamp(MoveMagnitude, 0.f, MaxAimMoveRate);
+		ControlMoveMagnitude = FMath::Min(ControlMoveMagnitude, MaxAimMoveRate);
 	}
-	AddMovementInput(MoveDirection, MoveMagnitude);
+	AddMovementInput(ControlMoveVector, ControlMoveMagnitude);
 		
 	if (!bIsAiming) return;
 
@@ -181,31 +192,39 @@ void AThirdPersonDemoCharacter::MoveCharacterDefault(const FVector MoveDirection
 	if (bIsInCover) ExitCover();
 }
 
-void AThirdPersonDemoCharacter::MoveCharacterWallRun(const FVector MoveDirection, float MoveMagnitude)
+void AThirdPersonDemoCharacter::MoveCharacterWallRun()
 {
-	// If there is no more wall, exit wall run
-	if (!TraceSideWallRun()) 
+	// If there is no more wall or the character touches the floor, exit wallrun
+	if (!TraceSideWallRun() || TraceDownWallRun())
 	{
 		ExitWallRun();
 		return;
 	}
 
+	// If there is no input in the wallrun direction, exit wallrun
 	FVector WallRunDirection = RotateAngleZAxis(TraceSideWallRunResult.Normal, bIsRightWallRunning);
-	if (MoveMagnitude == 0.0f || FVector::DotProduct(MoveDirection, WallRunDirection) <= 0.0f)
+	if (ControlMoveMagnitude <= 0.1f || FVector::DotProduct(ControlMoveVector, WallRunDirection) <= 0.0f)
 	{
 		ExitWallRun();
 		return;
 	}
 
-	float CorrectionAngle = FVector::PointPlaneDist(GetActorLocation(), TraceSideWallRunResult.Location, TraceSideWallRunResult.Normal) - WallRunOffset;
-	WallRunDirection = RotateAngleZAxis(WallRunDirection, bIsRightWallRunning, CorrectionAngle / 2);
+	// If the character moves too slowly, exit wallrun
+	if (GetHorizontalVector(GetCharacterMovement()->Velocity).Size() < WallRunMinHorizontalSpeed)
+	{
+		ExitWallRun();
+		return;
+	}
 
-	GEngine->AddOnScreenDebugMessage(-1, 999.f, FColor::Red, FString::Printf(TEXT("Offset Difference %f"), CorrectionAngle));
-	AddMovementInput(WallRunDirection, MoveMagnitude);
+	float CorrectionAngle = (FVector::PointPlaneDist(GetActorLocation(), TraceSideWallRunResult.Location, TraceSideWallRunResult.Normal) - WallRunOffset) / 2;
+	WallRunDirection = RotateAngleZAxis(WallRunDirection, bIsRightWallRunning, CorrectionAngle);
+
+	//GEngine->AddOnScreenDebugMessage(-1, 999.f, FColor::Red, FString::Printf(TEXT("Offset Difference %f"), CorrectionAngle));
+	AddMovementInput(WallRunDirection, ControlMoveMagnitude);
 }
 
 void AThirdPersonDemoCharacter::Turn(float Rate)
-{
+{ 
 	// calculate delta for this frame from the rate information
 	AddControllerYawInput(Rate);
 
@@ -217,6 +236,9 @@ void AThirdPersonDemoCharacter::Turn(float Rate)
 	const float RelativeYaw = DeltaYaw < -90.f ? DeltaYaw + 90.f : DeltaYaw - 90.f;
 	SetActorRotation((GetActorRotation() + FRotator(0.f, RelativeYaw, 0.f)).Quaternion());
 }
+
+//////////////////////////////////////////////////////////////////////////
+// Camera Control
 
 void AThirdPersonDemoCharacter::AdjustCameraOffset(const float DeltaSeconds)
 {
@@ -270,11 +292,14 @@ void AThirdPersonDemoCharacter::EndAim()
 	RecalculateTargetCameraOffset();
 }
 
+//////////////////////////////////////////////////////////////////////////
+// In-World UI
+
 void AThirdPersonDemoCharacter::TryUIHang()
 {
 	if (bIsInCover || GetCharacterMovement()->IsFalling()) return;
 
-	bool bCanShowHangUI = !bIsHanging && TraceUpClimb() && TraceForwardClimb() && UKismetMathLibrary::InRange_FloatFloat(TraceUpClimbResult.Location.Z - GetActorLocation().Z, ClimbUpMinDistance, ClimbUpMaxDistance + MaxJumpHeight);
+	bool bCanShowHangUI = !bIsHanging && TraceUpClimb(true) && TraceForwardClimb(true) && UKismetMathLibrary::InRange_FloatFloat(TraceUpClimbResult.Location.Z - GetActorLocation().Z, ClimbUpMinDistance, ClimbUpMaxDistance + MaxJumpHeight);
 
 	// If there is a climbable object in range, show the UI Actor
 	if (bCanShowHangUI)
@@ -305,16 +330,20 @@ void AThirdPersonDemoCharacter::TryUIHang()
 	}
 }
 
+//////////////////////////////////////////////////////////////////////////
+// Hanging/Climbing
+
 void AThirdPersonDemoCharacter::TryHang()
 {
-	if (!(GetCharacterMovement()->IsFalling()) || bIsHanging || !TraceUpClimb() || !TraceForwardClimb()) return;
+	// Return if character is not in the right state for wall hang or no ledge is available
+	if (!(GetCharacterMovement()->IsFalling()) || bIsWallRunning || bIsHanging || !TraceUpClimb() || !TraceForwardClimb()) return;
 
+	// Return if ledge is not within the right height range
 	if (!UKismetMathLibrary::InRange_FloatFloat(TraceUpClimbResult.Location.Z - GetActorLocation().Z, ClimbUpMinDistance, ClimbUpMaxDistance)) return;
 
 	bIsHanging = true;
 	GetCharacterMovement()->SetMovementMode(MOVE_Flying);
 	GetCharacterMovement()->StopMovementImmediately();
-	PlayAnimMontage(ClimbMontage, 0.f);
 
 	const FVector WallNormal = TraceForwardClimbResult.Normal;
 	FVector HangLocation = TraceForwardClimbResult.Location + WallNormal * HangHorizontalOffset;
@@ -328,6 +357,7 @@ void AThirdPersonDemoCharacter::TryClimbUp()
 {
 	if (bIsClimbing || !bIsHanging) return;
 
+	// Play climbing animation montage and set timer for "callback" when animation ends
 	const float AnimDuration = PlayAnimMontage(ClimbMontage);
 	FTimerHandle ClimbUpTimerHandle;
 	GetWorldTimerManager().SetTimer(ClimbUpTimerHandle, this, &AThirdPersonDemoCharacter::OnClimbUpFinished, AnimDuration - ClimbMontage->BlendOutTriggerTime);
@@ -337,6 +367,7 @@ void AThirdPersonDemoCharacter::TryClimbUp()
 
 void AThirdPersonDemoCharacter::OnClimbUpFinished()
 {
+	// Move the character forward after climbing
 	const FVector EndLocation = GetActorLocation() + GetActorForwardVector() * 30.f;
 	MoveCapsuleComponentTo(EndLocation, GetActorRotation());
 
@@ -347,42 +378,57 @@ void AThirdPersonDemoCharacter::OnClimbUpFinished()
 
 void AThirdPersonDemoCharacter::TryDropDown()
 {
-	if (!bIsHanging) return;
-	GetCharacterMovement()->SetMovementMode(MOVE_Falling);
-	StopAnimMontage(ClimbMontage);
+	if (!bIsHanging || bIsClimbing) return;
 
+	// Exit hang animation and set state to falling
+	GetCharacterMovement()->SetMovementMode(MOVE_Falling);
 	bIsHanging = false;
 }
 
+//////////////////////////////////////////////////////////////////////////
+// WallRun
+
 void AThirdPersonDemoCharacter::TryEnterWallRun()
 {
-	// return if character is not in the air
-	if (!GetCharacterMovement()->IsFalling()) return;
+	// Return if character is not in the air or already wallrunning
+	if (!GetCharacterMovement()->IsFalling() || bIsWallRunning ) return;
 
-	FVector HorizontalVector = GetCharacterMovement()->Velocity;
-	const float VerticalVelocity = HorizontalVector.Z;
-	HorizontalVector.Z = 0;
+	// Return if character is falling too fast or horizontal move speed is too slow for wallrun
+	const FVector HorizontalVector = GetHorizontalVector(GetCharacterMovement()->Velocity);
+	const float VerticalVelocity = GetCharacterMovement()->Velocity.Z;
+	if (HorizontalVector.Size() < WallRunMinHorizontalSpeed || VerticalVelocity < WallRunMinVerticalVelocity) return;
 
-	if (HorizontalVector.Size() < 550.f || FMath::Abs(VerticalVelocity) > 100.f) return;
+	// Return if there is no available wall or player is not controlling character to move in the same direction as the wallrun
+	FVector WallRunDirection = RotateAngleZAxis(TraceSideWallRunResult.Normal, bIsRightWallRunning);
+	if (!TraceSideWallRun() || ControlMoveMagnitude <= 0.1f || FVector::DotProduct(ControlMoveVector, WallRunDirection) <= 0.0f) return;
 
-	if (!TraceSideWallRun()) return;
-
-	GetCharacterMovement()->SetMovementMode(MOVE_Flying);
+	// Set appropriate initial Z velocity and gravity scale for wallrun
+	GetCharacterMovement()->GravityScale = WallRunMinGravityScale;
+	GetCharacterMovement()->Velocity.Z *= WallRunVerticalSpeedMultiplier;
 	bIsWallRunning = true;
 }
 
 void AThirdPersonDemoCharacter::ExitWallRun()
 {
-	GetCharacterMovement()->SetMovementMode(MOVE_Falling);
+	GetCharacterMovement()->GravityScale = 1.f;
 	bIsWallRunning = false;
 }
+
+//////////////////////////////////////////////////////////////////////////
+// Taking Cover
 
 void AThirdPersonDemoCharacter::ToggleCover()
 {
 	if (GetCharacterMovement()->MovementMode != EMovementMode::MOVE_Walking) return;
 
-	if (!bIsInCover) TryEnterCover();
-	else ExitCover();
+	if (!bIsInCover)
+	{
+		TryEnterCover();
+	}
+	else 
+	{
+		ExitCover();
+	}
 }
 
 void AThirdPersonDemoCharacter::TryEnterCover()
@@ -411,6 +457,7 @@ void AThirdPersonDemoCharacter::TryEnterCover()
 	GetWorldTimerManager().SetTimer(CoverTimerHandle, this, &AThirdPersonDemoCharacter::OnEnterCoverFinished, AnimDuration - EnterCoverRightMontage->BlendOutTriggerTime);
 	*/
 
+	// Set the booleans for cover state and move character to cover location
 	bIsInCover = true;
 	bIsAiming = false;
 	MoveCapsuleComponentTo(GetCoverLocation(), GetCoverRotation());
@@ -423,37 +470,40 @@ void AThirdPersonDemoCharacter::ExitCover()
 	RecalculateTargetCameraOffset();
 }
 
-bool AThirdPersonDemoCharacter::TraceUpClimb()
+//////////////////////////////////////////////////////////////////////////
+// Line Trace Functions
+
+bool AThirdPersonDemoCharacter::TraceUpClimb(const bool bDisableDraw /*= false*/)
 {
 	// Check if there is a platform of the right height in front of the player to hang on
 	const FVector TraceEnd = GetActorLocation() + GetActorForwardVector() * ClimbForwardDistance + FVector::UpVector * ClimbUpMinDistance;
 	const FVector TraceStart = TraceEnd + FVector::UpVector * (ClimbUpMaxDistance + MaxJumpHeight);
 
-	return DoLineTraceCheck(TraceStart, TraceEnd, TraceUpClimbResult);
+	return DoLineTraceCheck(TraceStart, TraceEnd, TraceUpClimbResult, bDisableDraw);
 }
 
-bool AThirdPersonDemoCharacter::TraceForwardClimb()
+bool AThirdPersonDemoCharacter::TraceForwardClimb(const bool bDisableDraw /*= false*/)
 {
 	// Check if there is a platform of the right distance in front of the player to hang on
 	const FVector TraceStart = FVector(GetActorLocation().X, GetActorLocation().Y, TraceUpClimbResult.Location.Z - TraceOffset * 2);
 	const FVector TraceEnd = TraceStart + GetActorForwardVector() * ClimbForwardDistance;
 
-	return DoLineTraceCheck(TraceStart, TraceEnd, TraceForwardClimbResult);
+	return DoLineTraceCheck(TraceStart, TraceEnd, TraceForwardClimbResult, bDisableDraw);
 }
 
 bool AThirdPersonDemoCharacter::TraceSideWallRun()
 {
-	const FVector TraceStart = GetActorLocation();
+	const FVector TraceStart = GetActorLocation() + FVector::DownVector * GetCapsuleComponent()->GetScaledCapsuleHalfHeight_WithoutHemisphere();
 	FVector TraceEnd;
 
-	// If already wall running, keep checking if a wall is available on the current side
+	// If already wallrunning, keep checking if a wall is available on the current side
 	if (bIsWallRunning)
 	{
 		TraceEnd = TraceStart + RotateAngleZAxis(GetActorForwardVector(), bIsRightWallRunning) * WallRunSideDistance;
 		return DoLineTraceCheck(TraceStart, TraceEnd, TraceSideWallRunResult);
 	}
 
-	// If not already wall running, first check for a wall on the right side
+	// If not already wallrunning, first check for a wall on the right side
 	TraceEnd = TraceStart + RotateAngleZAxis(GetActorForwardVector(), true) * WallRunSideDistance;
 	if (DoLineTraceCheck(TraceStart, TraceEnd, TraceSideWallRunResult))
 	{
@@ -466,6 +516,15 @@ bool AThirdPersonDemoCharacter::TraceSideWallRun()
 	bIsRightWallRunning = false;
 	return DoLineTraceCheck(TraceStart, TraceEnd, TraceSideWallRunResult);
 
+}
+
+bool AThirdPersonDemoCharacter::TraceDownWallRun()
+{
+	const FVector TraceStart = GetActorLocation();
+	const FVector TraceEnd = TraceStart + FVector::DownVector * (GetCapsuleComponent()->GetScaledCapsuleHalfHeight() + 5.f);
+	FHitResult HitResult;
+
+	return DoLineTraceCheck(TraceStart, TraceEnd, HitResult);
 }
 
 bool AThirdPersonDemoCharacter::TraceForwardCover()
@@ -495,9 +554,12 @@ bool AThirdPersonDemoCharacter::TraceSideCover()
 	return DoLineTraceCheck(TraceStart, TraceEnd, TraceSideCoverResult);
 }
 
-bool AThirdPersonDemoCharacter::DoLineTraceCheck(const FVector TraceStart, const FVector TraceEnd, FHitResult& OutHit)
+//////////////////////////////////////////////////////////////////////////
+// Helper Functions
+
+bool AThirdPersonDemoCharacter::DoLineTraceCheck(const FVector TraceStart, const FVector TraceEnd, FHitResult& OutHit, const bool bDisableDraw /*= false*/)
 {
-	const EDrawDebugTrace::Type DrawMode = bDrawDebug ? EDrawDebugTrace::ForDuration : EDrawDebugTrace::None;
+	const EDrawDebugTrace::Type DrawMode = (bDrawDebug && !bDisableDraw) ? EDrawDebugTrace::ForDuration : EDrawDebugTrace::None;
 	return UKismetSystemLibrary::LineTraceSingle(GetWorld(), TraceStart, TraceEnd, TraceTypeQuery_MAX, false, { this }, DrawMode, OutHit, true);
 }
 
@@ -508,7 +570,7 @@ void AThirdPersonDemoCharacter::MoveCapsuleComponentTo(const FVector TargetLocat
 	UKismetSystemLibrary::MoveComponentTo(GetCapsuleComponent(), TargetLocation, TargetRotation, true, true, 0.2f, true, EMoveComponentAction::Move, LatentActionInfo);
 }
 
-FVector AThirdPersonDemoCharacter::GetCoverLocation()
+FVector AThirdPersonDemoCharacter::GetCoverLocation() const
 {
 	if (bIsTallCover)
 	{
@@ -522,12 +584,19 @@ FVector AThirdPersonDemoCharacter::GetCoverLocation()
 	}
 }
 
-FRotator AThirdPersonDemoCharacter::GetCoverRotation()
+FRotator AThirdPersonDemoCharacter::GetCoverRotation() const
 {
 	return TraceForwardCoverResult.Normal.Rotation();
 }
 
-FVector AThirdPersonDemoCharacter::RotateAngleZAxis(const FVector InVector, bool bClockWise, float Degree /*= 90.f*/)
+FVector AThirdPersonDemoCharacter::RotateAngleZAxis(const FVector InVector, bool bClockWise, float Degree /*= 90.f*/) const
 {
 	return UKismetMathLibrary::RotateAngleAxis(InVector, bClockWise ? Degree : -Degree, FVector::UpVector);
+}
+
+FVector AThirdPersonDemoCharacter::GetHorizontalVector(const FVector InVector) const
+{
+	FVector OutVector = InVector;
+	OutVector.Z = 0;
+	return OutVector;
 }
