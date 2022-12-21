@@ -345,10 +345,9 @@ void AThirdPersonDemoCharacter::TryHang()
 	GetCharacterMovement()->SetMovementMode(MOVE_Flying);
 	GetCharacterMovement()->StopMovementImmediately();
 
-	const FVector WallNormal = TraceForwardClimbResult.Normal;
-	FVector HangLocation = TraceForwardClimbResult.Location + WallNormal * HangHorizontalOffset;
+	FVector HangLocation = TraceForwardClimbResult.Location + TraceForwardClimbResult.Normal * HangHorizontalOffset;
 	HangLocation.Z = TraceUpClimbResult.Location.Z - HangVerticalOffset;
-	const FRotator HangRotation = UKismetMathLibrary::MakeRotFromX(WallNormal * -1);
+	const FRotator HangRotation = UKismetMathLibrary::MakeRotFromX(TraceForwardClimbResult.Normal * -1);
 
 	MoveCapsuleComponentTo(HangLocation, HangRotation);
 }
